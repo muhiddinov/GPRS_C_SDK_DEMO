@@ -10,28 +10,66 @@
 #include "gps_parse.h"
 #include "math.h"
 #include "gps.h"
+#include <api_mqtt.h>
+#include "api_network.h"
+#include "api_socket.h"
+#include "demo_mqtt.h"
 
 #define MAIN_TASK_STACK_SIZE    (2048 * 2)
 #define MAIN_TASK_PRIORITY      0
 #define MAIN_TASK_NAME          "GPS Test Task"
 
 static HANDLE gpsTaskHandle = NULL;
+static HANDLE semMqttStart = NULL;
 bool flag = true;
 
-
-// const uint8_t nmea[]="$GNGGA,000021.263,2228.7216,N,11345.5625,E,0,0,,153.3,M,-3.3,M,,*4E\r\n$GPGSA,A,1,,,,,,,,,,,,,,,*1E\r\n$BDGSA,A,1,,,,,,,,,,,,,,,*0F\r\n$GPGSV,1,1,00*79\r\n$BDGSV,1,1,00*68\r\n$GNRMC,000021.263,V,2228.7216,N,11345.5625,E,0.000,0.00,060180,,,N*5D\r\n$GNVTG,0.00,T,,M,0.000,N,0.000,K,N*2C\r\n";
 
 void EventDispatch(API_Event_t* pEvent)
 {
     switch(pEvent->id)
     {
+        case API_EVENT_ID_NO_SIMCARD:
+            Trace(1,"!!NO SIM CARD%d!!!!",pEvent->param1);
+            break;
+
+        case API_EVENT_ID_SYSTEM_READY:
+            Trace(1,"system initialize complete");
+            break;
+
         case API_EVENT_ID_NETWORK_REGISTERED_HOME:
         case API_EVENT_ID_NETWORK_REGISTERED_ROAMING:
-            Trace(1,"gprs register complete");
-            flag = true;
+            Trace(1,"network register success");
+            Network_StartAttach();
+            break;
+
+        case API_EVENT_ID_NETWORK_ATTACHED:
+            Trace(1,"network attach success");
+            Network_PDP_Context_t context = {
+                .apn        ="internet",
+                .userName   = ""    ,
+                .userPasswd = ""
+            };
+            Network_StartActive(context);
+            break;
+
+        case API_EVENT_ID_NETWORK_ACTIVATED:
+            Trace(1,"network activate success.."); 
+            OS_ReleaseSemaphore(semMqttStart);
+            break;
+        
+        case API_EVENT_ID_SOCKET_CONNECTED:
+            Trace(1,"socket connected");
+            break;
+        
+        case API_EVENT_ID_SOCKET_CLOSED:
+            Trace(1,"socket closed");
+                      
+            break;
+
+        case API_EVENT_ID_SIGNAL_QUALITY:
+            Trace(1,"CSQ:%d",pEvent->param1);
             break;
         case API_EVENT_ID_GPS_UART_RECEIVED:
-            // Trace(1,"received GPS data,length:%d, data:%s,flag:%d",pEvent->param1,pEvent->pParam1,flag);
             GPS_Update(pEvent->pParam1,pEvent->param1);
             break;
         case API_EVENT_ID_UART_RECEIVED:
@@ -63,26 +101,16 @@ void gps_testTask(void *pData)
     GPS_Info_t* gpsInfo = Gps_GetInfo();
     uint8_t buffer[150];
     char buff1[15],buff2[15];
-
-    //wait for gprs register complete
-    //The process of GPRS registration network may cause the power supply voltage of GPS to drop,
-    //which resulting in GPS restart.
     while(!flag)
     {
         Trace(1,"wait for gprs regiter complete");
         OS_Sleep(2000);
     }
-
-    //open GPS hardware(UART2 open either)
     GPS_Init();
     GPS_Open(NULL);
-
-    //wait for gps start up, or gps will not response command
     while(gpsInfo->rmc.latitude.value == 0)
         OS_Sleep(1000);
     
-
-    // set gps nmea output interval
     for(uint8_t i = 0;i<3;++i)
     {
         bool ret = GPS_SetOutputInterval(10000);
@@ -91,26 +119,11 @@ void gps_testTask(void *pData)
             break;
         OS_Sleep(1000);
     }
-
-    // if(!GPS_ClearInfoInFlash())
-    //     Trace(1,"erase gps fail");
-    
-    // if(!GPS_SetQzssOutput(false))
-    //     Trace(1,"enable qzss nmea output fail");
-
-    // if(!GPS_SetSearchMode(true,false,true,false))
-    //     Trace(1,"set search mode fail");
-
-    // if(!GPS_SetSBASEnable(true))
-    //     Trace(1,"enable sbas fail");
     
     if(!GPS_GetVersion(buffer,150))
         Trace(1,"get gps firmware version fail");
     else
         Trace(1,"gps firmware version:%s",buffer);
-
-    // if(!GPS_SetFixMode(GPS_FIX_MODE_LOW_SPEED))
-        // Trace(1,"set fix mode fail");
 
     if(!GPS_SetOutputInterval(1000))
         Trace(1,"set nmea output interval fail");
@@ -119,7 +132,6 @@ void gps_testTask(void *pData)
 
     while(1)
     {
-        //show fix info
         uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
         char* isFixedStr;            
         if(isFixed == 2)
@@ -134,7 +146,6 @@ void gps_testTask(void *pData)
         else
             isFixedStr = "no fix";
 
-        //convert unit ddmm.mmmm to degree(°) 
         int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
         double latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
         temp = (int)(gpsInfo->rmc.longitude.value/gpsInfo->rmc.longitude.scale/100);
@@ -143,16 +154,12 @@ void gps_testTask(void *pData)
         gcvt(latitude,6,buff1);
         gcvt(longitude,6,buff2);
         
-        //you can copy ` buff1,buff2 `(latitude,longitude) to http://www.gpsspg.com/maps.htm check location on map
 
         snprintf(buffer,sizeof(buffer),"GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, is fixed:%s, coordinate:WGS84, Latitude:%s, Longitude:%s, unit:degree",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
                                                             gpsInfo->gga.fix_quality,isFixedStr, buff1,buff2);
-        //show in tracer
         Trace(2,buffer);
-        //send to UART1
         UART_Write(UART1,buffer,strlen(buffer));
         UART_Write(UART1,"\r\n\r\n",4);
-
         OS_Sleep(5000);
     }
 }
@@ -161,9 +168,7 @@ void gps_testTask(void *pData)
 void gps_MainTask(void *pData)
 {
     API_Event_t* event=NULL;
-    
 
-    //open UART1 to print NMEA infomation
     UART_Config_t config = {
         .baudRate = UART_BAUD_RATE_115200,
         .dataBits = UART_DATA_BITS_8,
@@ -174,11 +179,9 @@ void gps_MainTask(void *pData)
     };
     UART_Init(UART1,config);
 
-    //Create UART1 send task and location print task
     OS_CreateTask(gps_testTask,
             NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
 
-    //Wait event
     while(1)
     {
         if(OS_WaitEvent(gpsTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
