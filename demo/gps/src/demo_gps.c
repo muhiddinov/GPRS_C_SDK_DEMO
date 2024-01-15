@@ -23,6 +23,30 @@ static HANDLE gpsTaskHandle = NULL;
 static HANDLE semMqttStart = NULL;
 bool flag = true;
 
+typedef enum{
+    MQTT_EVENT_CONNECTED = 0,
+    MQTT_EVENT_DISCONNECTED ,
+    MQTT_EVENT_MAX
+}MQTT_Event_ID_t;
+
+typedef struct {
+    MQTT_Event_ID_t id;
+    MQTT_Client_t* client;
+}MQTT_Event_t;
+
+typedef enum{
+    MQTT_STATUS_DISCONNECTED = 0,
+    MQTT_STATUS_CONNECTED       ,
+    MQTT_STATUS_MAX
+}MQTT_Status_t;
+
+MQTT_Status_t mqttStatus = MQTT_STATUS_DISCONNECTED;
+
+GPIO_config_t gpioLedBlue = {
+    .mode         = GPIO_MODE_OUTPUT,
+    .pin          = GPIO_PIN27,
+    .defaultLevel = GPIO_LEVEL_LOW
+};
 
 void EventDispatch(API_Event_t* pEvent)
 {
