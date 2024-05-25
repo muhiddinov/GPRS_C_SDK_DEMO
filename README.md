@@ -3,7 +3,7 @@
 
 Ai-Thinker GPRS development SDK written by C
 
-安信可GPRS模组二次开发SDK C语言版
+Ai-Thinker GPRS module secondary development SDK C language version
 
 [English Version](./README_EN.md)
 
