@@ -2,9 +2,9 @@
 #define __DEMO_MQTT_H_
 
 
-#define BROKER_IP  "mqtt.neucrack.com"
+#define BROKER_IP  "test.mosquitto.org"
 #define BROKER_PORT 8883
-#define BROKER_HOSTNAME "mqtt.neucrack.com"
+#define BROKER_HOSTNAME "test.mosquitto.org"
 #define CLIENT_ID  "Neucrack1"
 #define CLIENT_USER NULL
 #define CLIENT_PASS NULL

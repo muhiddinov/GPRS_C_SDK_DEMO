@@ -13,14 +13,17 @@
 #include <api_mqtt.h>
 #include "api_network.h"
 #include "api_socket.h"
-#include "demo_mqtt.h"
+#include "mqtt_config.h"
+#include "api_hal_gpio.h"
 
 #define MAIN_TASK_STACK_SIZE    (2048 * 2)
 #define MAIN_TASK_PRIORITY      0
-#define MAIN_TASK_NAME          "GPS Test Task"
+#define MAIN_TASK_NAME          "GPS Task"
 
 static HANDLE gpsTaskHandle = NULL;
 static HANDLE mqttTaskHandle = NULL;
+static HANDLE semMqttStart = NULL;
+
 bool flag = true;
 
 typedef enum{
@@ -120,6 +123,65 @@ void EventDispatch(API_Event_t* pEvent)
     }
 }
 
+void OnMqttReceived(void* arg, const char* topic, uint32_t payloadLen)
+{
+    Trace(1,"MQTT received publish data request, topic:%s, payload length:%d", topic, payloadLen);
+}
+
+void OnMqttReceiedData(void* arg, const uint8_t* data, uint16_t len, MQTT_Flags_t flags)
+{
+    Trace(1,"MQTT recieved publish data, length:%d, data:%s", len, data);
+    if(flags == MQTT_FLAG_DATA_LAST)
+        Trace(1,"MQTT data is last frame");
+
+    // char* cmp = strstr((char*)data, (char*)"led on");
+    // int position = cmp - (char*)data;
+    // Trace(1, "Position: %d", position);
+
+    if (strstr((char*)data, "led on") - (char*)data == 0) {
+        GPIO_SetLevel(gpioLedBlue, GPIO_LEVEL_HIGH);
+    }
+    
+    if (strstr((char*)data, "led off") - (char*)data == 0) {
+        GPIO_SetLevel(gpioLedBlue, GPIO_LEVEL_LOW);
+    }
+}
+
+void OnMqttSubscribed(void* arg, MQTT_Error_t err)
+{
+    if(err != MQTT_ERROR_NONE)
+    Trace(1,"MQTT subscribe fail,error code:%d",err);
+    else
+    Trace(1,"MQTT subscribe success,topic:%s",(const char*)arg);
+}
+
+void OnMqttConnection(MQTT_Client_t *client, void *arg, MQTT_Connection_Status_t status)
+{
+    Trace(1,"MQTT connection status:%d",status);
+    MQTT_Event_t* event = (MQTT_Event_t*)OS_Malloc(sizeof(MQTT_Event_t));
+    if(!event)
+    {
+        Trace(1,"MQTT no memory");
+        return ;
+    }
+    if(status == MQTT_CONNECTION_ACCEPTED)
+    {
+        Trace(1,"MQTT succeed connect to broker");
+        //!!! DO NOT suscribe here(interrupt function), do MQTT suscribe in task, or it will not excute
+        event->id = MQTT_EVENT_CONNECTED;
+        event->client = client;
+        OS_SendEvent(mqttTaskHandle, event, OS_TIME_OUT_WAIT_FOREVER, OS_EVENT_PRI_NORMAL);
+    }
+    else
+    {
+        event->id = MQTT_EVENT_DISCONNECTED;
+        event->client = client;
+        OS_SendEvent(mqttTaskHandle, event, OS_TIME_OUT_WAIT_FOREVER, OS_EVENT_PRI_NORMAL);
+        Trace(1,"MQTT connect to broker fail,error code:%d",status);
+    }
+    Trace(1,"MQTT OnMqttConnection() end");
+}
+
 void gps_testTask(void *pData)
 {
     GPS_Info_t* gpsInfo = Gps_GetInfo();
@@ -153,7 +215,6 @@ void gps_testTask(void *pData)
         Trace(1,"set nmea output interval fail");
     
     Trace(1,"init ok");
-
     while(1)
     {
         uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
@@ -187,9 +248,105 @@ void gps_testTask(void *pData)
         OS_Sleep(5000);
     }
 }
+void StartTimerPublish(uint32_t interval,MQTT_Client_t* client);
+void OnPublish(void* arg, MQTT_Error_t err)
+{
+    if(err == MQTT_ERROR_NONE)
+        Trace(1,"MQTT publish success");
+    else
+        Trace(1,"MQTT publish error, error code:%d",err);
+}
 
+void OnTimerPublish(void* param)
+{
+    MQTT_Error_t err;
+    MQTT_Client_t* client = (MQTT_Client_t*)param;
+    if(mqttStatus != MQTT_STATUS_CONNECTED)
+    {
+        Trace(1,"MQTT not connected to broker! can not publish");
+        return;
+    }
+    Trace(1,"MQTT OnTimerPublish");
+    char publish_data[100];
+    memset(publish_data, 0x00, 100);
+    sprintf(publish_data, "%d - message from AI thinker A9G module\r\n");
+    err = MQTT_Publish(client, PUBLISH_TOPIC, publish_data, 100, 1, 2, 0, OnPublish, NULL);
+    if(err != MQTT_ERROR_NONE)
+        Trace(1,"MQTT publish error, error code:%d",err);
+    StartTimerPublish(PUBLISH_INTERVAL,client);
+}
 
-void gps_MainTask(void *pData)
+void StartTimerPublish(uint32_t interval,MQTT_Client_t* client)
+{
+    OS_StartCallbackTimer(gpsTaskHandle, interval, OnTimerPublish, (void*)client);
+}
+
+void mqttTaskEventDispatch(MQTT_Event_t* pEvent)
+{
+    switch(pEvent->id)
+    {
+        case MQTT_EVENT_CONNECTED:
+            mqttStatus = MQTT_STATUS_CONNECTED;
+            Trace(1,"MQTT connected, now subscribe topic:%s",SUBSCRIBE_TOPIC);
+            MQTT_Error_t err;
+            MQTT_SetInPubCallback(pEvent->client, OnMqttReceived, OnMqttReceiedData, MQTT_FLAG_NONE);
+            err = MQTT_Subscribe(pEvent->client, SUBSCRIBE_TOPIC, MQTT_QOS, OnMqttSubscribed, (void*)SUBSCRIBE_TOPIC);
+            if(err != MQTT_ERROR_NONE)
+                Trace(1,"MQTT subscribe error, error code:%d",err);
+            StartTimerPublish(PUBLISH_INTERVAL, pEvent->client);
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            mqttStatus = MQTT_STATUS_DISCONNECTED;
+            break;
+        default:
+            Trace(1,"MQTT event not handled, id:%d",pEvent->id);
+            break;
+    }
+}
+
+void mqtt_app_task(void *pData)
+{
+    MQTT_Event_t* event=NULL;
+    semMqttStart = OS_CreateSemaphore(0);
+    OS_WaitForSemaphore(semMqttStart, OS_WAIT_FOREVER);
+    OS_DeleteSemaphore(semMqttStart);
+    Trace(1,"start mqtt test");
+    MQTT_Client_t* client = MQTT_ClientNew();
+    MQTT_Connect_Info_t ci;
+    MQTT_Error_t err;
+    memset(&ci,0,sizeof(MQTT_Connect_Info_t));
+    ci.client_id = CLIENT_ID;
+    ci.client_user = CLIENT_USER;
+    ci.client_pass = CLIENT_PASS;
+    ci.keep_alive = MQTT_KEEP_ALIVE;
+    ci.will_topic = SUBSCRIBE_TOPIC;
+    ci.will_msg = PUBLISH_PAYLOAD;
+    ci.will_qos = MQTT_QOS;
+    ci.will_retain = 0;
+    ci.use_ssl = MQTT_SSL_ENABLED;
+    ci.ssl_verify_mode = MQTT_SSL_VERIFY_MODE_REQUIRED;
+    ci.ca_cert = ca_crt;
+    ci.broker_hostname = BROKER_IP;
+
+    err = MQTT_Connect(client, BROKER_IP, BROKER_PORT, OnMqttConnection, NULL, &ci);
+    if(err != MQTT_ERROR_NONE)
+    {
+        Trace(1,"MQTT connect error, error code:%d",err);
+        OS_Free(client);
+        return;
+    }
+    while (1)
+    {
+        if(OS_WaitEvent(mqttTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
+        {
+            mqttTaskEventDispatch(event);
+            OS_Free(event);
+        }
+            
+    }
+}
+
+void mqtt_app_MainTask(void *pData)
 {
     API_Event_t* event=NULL;
 
@@ -202,10 +359,12 @@ void gps_MainTask(void *pData)
         .useEvent   = true
     };
     UART_Init(UART1,config);
-
+    OS_CreateTask(mqtt_app_task,
+            NULL, NULL, 2048, 1, 0, 0, "MQTT Task");
+    Trace(1,"MQTT task created");
     OS_CreateTask(gps_testTask,
-            NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
-
+            NULL, NULL, 2048, 1, 0, 0, "GPS Task");
+    Trace(1,"GPS task created");
     while(1)
     {
         if(OS_WaitEvent(gpsTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
@@ -219,9 +378,9 @@ void gps_MainTask(void *pData)
 }
 
 
-void gps_Main(void)
+void mqtt_app_Main(void)
 {
-    gpsTaskHandle = OS_CreateTask(gps_MainTask,
+    gpsTaskHandle = OS_CreateTask(mqtt_app_MainTask,
         NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
     OS_SetUserMainHandle(&gpsTaskHandle);
 }

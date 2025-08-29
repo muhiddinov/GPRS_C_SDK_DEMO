@@ -20,7 +20,7 @@
 /*******************************************************************/
 /////////////////////////socket configuration////////////////////////
 // (online tcp debug tool: http://tt.ai-thinker.com:8000/ttcloud)
-#define SERVER_IP   "www.example.com"
+#define SERVER_IP   "www.aka.org.uz"
 #define SERVER_PORT 80
 #define SERVER_PATH "/"
 /*******************************************************************/
@@ -79,7 +79,7 @@ void EventDispatch(API_Event_t* pEvent)
             else
             {
                 Network_PDP_Context_t context = {
-                    .apn        ="cmnet",
+                    .apn        ="default",
                     .userName   = ""    ,
                     .userPasswd = ""
                 };
@@ -90,7 +90,7 @@ void EventDispatch(API_Event_t* pEvent)
         case API_EVENT_ID_NETWORK_ATTACHED:
             Trace(2,"network attach success");
             Network_PDP_Context_t context = {
-                .apn        ="cmnet",
+                .apn        ="default",
                 .userName   = ""    ,
                 .userPasswd = ""
             };
@@ -190,7 +190,7 @@ bool Http_Get(const char* domain, int port,const char* path, char* retBuffer, in
                 else if(ret == 0)
                 {
                     Trace(1,"ret == 0");
-                    beak;
+                    break;
                 }
                 Trace(1,"recv len:%d,data:%s",ret,retBuffer);
                 close(fd);

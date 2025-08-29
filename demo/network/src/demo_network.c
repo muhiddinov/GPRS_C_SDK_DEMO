@@ -70,7 +70,7 @@ void EventDispatch(API_Event_t* pEvent)
             else
             {
                 Network_PDP_Context_t context = {
-                    .apn        ="cmnet",
+                    .apn        ="default",
                     .userName   = ""    ,
                     .userPasswd = ""
                 };

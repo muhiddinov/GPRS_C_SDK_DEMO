@@ -97,7 +97,7 @@ void CallTest()
     for(int i=0;i<10;++i,++dtmf)
     {
         Trace(1,"make a DTMF:%c",dtmf);
-        if(!CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,true))
+        if(!CALL_DTMF(dtmf, CALL_DTMF_GAIN_m3dB, 5, 15, true))
         {
             Trace(1,"DTMF fail");
             break;
